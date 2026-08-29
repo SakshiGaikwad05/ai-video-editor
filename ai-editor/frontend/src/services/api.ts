@@ -90,3 +90,13 @@ export async function callAgentTool(payload: { tool: string; arguments: Record<s
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function runAgentCommand(payload: { command: string; video_id: string }) {
+  const res = await fetch(`${base}/agent/run`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

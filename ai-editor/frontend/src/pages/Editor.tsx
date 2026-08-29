@@ -32,6 +32,8 @@ import {
   listAgentTools,
   callAgentTool,
   clipVideo,
+  getVideo,
+  runAgentCommand,
 } from "../services/api";
 
 type TabId = "media" | "edit" | "text" | "captions" | "ai";
@@ -241,10 +243,17 @@ export default function Editor() {
     setAiResult(null);
     notify("Running AI command...");
     try {
-      const res = await callAgentTool({
-        tool: "agent",
-        arguments: { command: aiCommand, video_id: video.video_id },
+      const res = await runAgentCommand({
+        command: aiCommand,
+        video_id: video.video_id,
       });
+
+      const nextVideoId = res?.result?.video_id;
+      if (nextVideoId) {
+        const fresh = await getVideo(nextVideoId);
+        setVideo(fresh);
+      }
+
       setAiResult(res.result);
       notify("AI command complete");
     } catch (err: any) {

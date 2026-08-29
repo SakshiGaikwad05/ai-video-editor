@@ -40,15 +40,20 @@ def _save_to_store(path: Path) -> str:
 
 
 def _aspect_filter(ratio: str) -> str:
-    if ratio == "16:9":
-        return "scale=iw*9/16:ih,setsar=1,pad=iw:ih*16/9:(iw-iw*16/9)/2:0"
-    if ratio == "9:16":
-        return "scale=iw:ih*9/16,setsar=1,pad=iw*9/16:ih:(iw*9/16-iw)/2:0"
-    if ratio == "1:1":
-        return "scale=iw:iw,setsar=1,pad=iw:iw:(iw-iw)/2:(iw-iw)/2"
-    if ratio == "4:5":
-        return "scale=iw:iw*4/5,setsar=1,pad=iw*4/5:ih:(iw*4/5-iw)/2:0"
-    raise ValueError(f"Unsupported ratio: {ratio}")
+    targets = {
+        "16:9": (1920, 1080),
+        "9:16": (1080, 1920),
+        "1:1": (1080, 1080),
+        "4:5": (1080, 1350),
+    }
+    if ratio not in targets:
+        raise ValueError(f"Unsupported ratio: {ratio}")
+    tw, th = targets[ratio]
+    return (
+        f"scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+        f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"setsar=1"
+    )
 
 
 def _format_srt_time(seconds: float) -> str:

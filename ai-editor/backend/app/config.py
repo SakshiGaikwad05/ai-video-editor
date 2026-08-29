@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     media_root: Path = MEDIA_ROOT
     upload_dir: Path = UPLOAD_DIR
     output_dir: Path = OUTPUT_DIR
+    hermes_cli: str = r"C:\Users\lenovo E41\AppData\Local\hermes\hermes-agent\bin\hermes.exe"
 
 settings = Settings()
 settings.upload_dir.mkdir(parents=True, exist_ok=True)

@@ -18,3 +18,12 @@ app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/ai/demo")
+def ai_demo():
+    return {
+        "status": "ok",
+        "mode": "demo",
+        "message": "AI tool layer is connected. Use /api/agent/call from the UI.",
+    }
