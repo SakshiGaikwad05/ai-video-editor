@@ -91,11 +91,35 @@ export async function callAgentTool(payload: { tool: string; arguments: Record<s
   return res.json();
 }
 
-export async function runAgentCommand(payload: { command: string; video_id: string }) {
+export async function startAgentTask(payload: { command: string; video_id?: string }) {
   const res = await fetch(`${base}/agent/run`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getAgentTask(taskId: string) {
+  const res = await fetch(`${base}/agent/tasks/${encodeURIComponent(taskId)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function stopAgentTask(taskId: string) {
+  const res = await fetch(`${base}/agent/tasks/${encodeURIComponent(taskId)}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function resolveAgentApproval(taskId: string, approved: boolean) {
+  const res = await fetch(`${base}/agent/tasks/${encodeURIComponent(taskId)}/approval`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ approved }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

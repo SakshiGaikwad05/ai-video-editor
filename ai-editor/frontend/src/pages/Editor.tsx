@@ -30,10 +30,12 @@ import {
   exportVideo,
   downloadVideo,
   listAgentTools,
-  callAgentTool,
   clipVideo,
   getVideo,
-  runAgentCommand,
+  startAgentTask,
+  getAgentTask,
+  stopAgentTask,
+  resolveAgentApproval,
 } from "../services/api";
 
 type TabId = "media" | "edit" | "text" | "captions" | "ai";
@@ -65,7 +67,9 @@ export default function Editor() {
 
   const [aiCommand, setAiCommand] = useState("");
   const [aiRunning, setAiRunning] = useState(false);
-  const [aiResult, setAiResult] = useState<any>(null);
+  const [task, setTask] = useState<any>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const stopPollingRef = useRef(false);
 
   const [exporting, setExporting] = useState(false);
   const [exportDone, setExportDone] = useState(false);
@@ -237,29 +241,81 @@ export default function Editor() {
     }
   };
 
-  const runAi = async () => {
-    if (!video || !aiCommand.trim()) return;
-    setAiRunning(true);
-    setAiResult(null);
-    notify("Running AI command...");
-    try {
-      const res = await runAgentCommand({
-        command: aiCommand,
-        video_id: video.video_id,
-      });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-      const nextVideoId = res?.result?.video_id;
-      if (nextVideoId) {
-        const fresh = await getVideo(nextVideoId);
-        setVideo(fresh);
+  const finishTask = async (t: any) => {
+    setTask(t);
+    if (t?.status === "completed") {
+      for (const step of t.steps || []) {
+        if (step?.kind === "tool" && step.result?.video_id) {
+          const fresh = await getVideo(step.result.video_id).catch(() => null);
+          if (fresh) {
+            setVideo(fresh);
+            break;
+          }
+        }
       }
-
-      setAiResult(res.result);
-      notify("AI command complete");
-    } catch (err: any) {
-      notify(err.message || "AI command failed");
+      notify("Task complete");
+    } else if (t?.status === "failed") {
+      setAiError(t.error || "Task failed");
+      notify(t.error || "Task failed");
+    } else if (t?.status === "stopped") {
+      notify("Task stopped");
     }
     setAiRunning(false);
+  };
+
+  const pollTask = async (taskId: string) => {
+    try {
+      while (!stopPollingRef.current) {
+        const t = await getAgentTask(taskId);
+        setTask(t);
+        const terminal = t?.status === "completed" || t?.status === "failed" || t?.status === "stopped";
+        if (terminal) {
+          await finishTask(t);
+          return;
+        }
+        await sleep(t?.status === "pending_approval" ? 1200 : 2000);
+      }
+      const t = await getAgentTask(taskId).catch(() => null);
+      if (t) await finishTask(t);
+    } catch (err: any) {
+      setAiError(err.message || "Failed to fetch task status");
+      setAiRunning(false);
+    }
+  };
+
+  const runAi = async () => {
+    const cmd = aiCommand.trim();
+    if (!cmd || aiRunning) return;
+    setAiRunning(true);
+    setTask(null);
+    setAiError(null);
+    stopPollingRef.current = false;
+    notify("Starting task...");
+    try {
+      const started = await startAgentTask({ command: cmd, video_id: video?.video_id });
+      await pollTask(started.task_id);
+    } catch (err: any) {
+      setAiError(err.message || "Failed to start task");
+      setAiRunning(false);
+      notify(err.message || "Failed to start task");
+    }
+  };
+
+  const stopTask = async () => {
+    stopPollingRef.current = true;
+    if (task?.id) await stopAgentTask(task.id).catch(() => {});
+    notify("Stopping task...");
+  };
+
+  const approveTask = async (approved: boolean) => {
+    if (!task?.id) return;
+    try {
+      await resolveAgentApproval(task.id, approved);
+    } catch (err: any) {
+      setAiError(err.message || "Failed to resolve approval");
+    }
   };
 
   const formatTime = (t: number) => {
@@ -533,7 +589,7 @@ export default function Editor() {
                 <div className="panel p-3">
                   <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-400">AI Assistant</h3>
                   <p className="mb-2 text-xs text-gray-500">
-                    Ask the assistant to transform the current video. Example: "Make this a YouTube Short with subtitles."
+                    Ask the assistant to analyze the project, edit a video, or browse the web. Example: "Analyze this project and describe what it does."
                   </p>
                   <textarea
                     value={aiCommand}
@@ -541,27 +597,157 @@ export default function Editor() {
                     className="input mb-2 h-24 resize-none"
                     placeholder="Describe what you want..."
                   />
-                  <button
-                    onClick={runAi}
-                    disabled={!video || aiRunning || !aiCommand.trim()}
-                    className="btn-primary w-full rounded-md py-2 text-xs"
-                  >
-                    {aiRunning ? (
-                      <>
-                        <Loader2 size={14} className="mr-2 animate-spin" />
-                        Running...
-                      </>
-                    ) : (
-                      <>
-                        <Wand2 size={14} className="mr-2" />
-                        Run AI
-                      </>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={runAi}
+                      disabled={aiRunning || !aiCommand.trim()}
+                      className="btn-primary flex-1 rounded-md py-2 text-xs"
+                    >
+                      {aiRunning ? (
+                        <>
+                          <Loader2 size={14} className="mr-2 animate-spin" />
+                          Running...
+                        </>
+                      ) : (
+                        <>
+                          <Wand2 size={14} className="mr-2" />
+                          Run AI
+                        </>
+                      )}
+                    </button>
+                    {(aiRunning || task?.status === "running" || task?.status === "pending_approval") && (
+                      <button
+                        onClick={stopTask}
+                        className="btn-secondary rounded-md px-3 py-2 text-xs text-red-300"
+                      >
+                        <X size={14} className="mr-1" />
+                        Stop
+                      </button>
                     )}
-                  </button>
-                  {aiResult && (
-                    <pre className="mt-2 overflow-x-auto rounded-md bg-gray-800 p-2 text-xs text-gray-300">
-                      {JSON.stringify(aiResult, null, 2)}
-                    </pre>
+                  </div>
+
+                  {aiError && (
+                    <div className="mt-2 rounded-md border border-red-800 bg-red-950/40 p-2 text-xs text-red-300">
+                      <div className="mb-1 font-semibold">Error</div>
+                      <pre className="whitespace-pre-wrap">{aiError}</pre>
+                    </div>
+                  )}
+
+                  {task && (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span
+                          className={`rounded-full px-2 py-0.5 font-medium ${
+                            task.status === "completed"
+                              ? "bg-green-900/60 text-green-300"
+                              : task.status === "failed"
+                              ? "bg-red-900/60 text-red-300"
+                              : task.status === "pending_approval"
+                              ? "bg-amber-900/60 text-amber-300"
+                              : task.status === "stopped"
+                              ? "bg-gray-700 text-gray-300"
+                              : "bg-blue-900/60 text-blue-300"
+                          }`}
+                        >
+                          {task.status}
+                        </span>
+                        {task.current_tool && (
+                          <span className="text-blue-300">
+                            <Loader2 size={12} className="mr-1 inline animate-spin" />
+                            tool: {task.current_tool}
+                          </span>
+                        )}
+                        {task.iteration ? <span className="text-gray-500">iter {task.iteration}</span> : null}
+                      </div>
+
+                      {task.status === "pending_approval" && task.pending_action && (
+                        <div className="rounded-md border border-amber-700 bg-amber-950/30 p-2">
+                          <div className="mb-1 text-xs font-medium text-amber-300">Approval required</div>
+                          <pre className="mb-2 overflow-x-auto whitespace-pre-wrap text-[11px] text-amber-200">
+                            {JSON.stringify(task.pending_action, null, 2)}
+                          </pre>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => approveTask(true)}
+                              className="btn-primary flex-1 rounded-md py-1.5 text-xs"
+                            >
+                              <Check size={14} className="mr-1 inline" />
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => approveTask(false)}
+                              className="btn-secondary flex-1 rounded-md py-1.5 text-xs"
+                            >
+                              <X size={14} className="mr-1 inline" />
+                              Deny
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {task.plan?.length > 0 && (
+                        <div className="rounded-md bg-gray-800/60 p-2">
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Plan</div>
+                          <ol className="list-inside list-decimal space-y-0.5 text-[11px] text-gray-300">
+                            {task.plan.map((s: string, i: number) => (
+                              <li key={i}>{s}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+
+                      {(task.steps?.length ?? 0) > 0 && (
+                        <div className="rounded-md bg-gray-800/60 p-2">
+                          <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                            <span>Execution</span>
+                            <span className="text-gray-500">{task.steps.length} steps</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {task.steps.map((s: any, i: number) => (
+                              <div key={i} className="rounded bg-gray-900/70 p-1.5">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[11px] font-medium text-gray-300">
+                                    {s.kind === "plan"
+                                      ? `Plan (${s.steps?.length ?? 0} steps)`
+                                      : s.kind === "tool"
+                                      ? `${s.tool}`
+                                      : s.kind === "error"
+                                      ? `Error in ${s.tool || "step"}`
+                                      : s.kind === "approval"
+                                      ? `${s.tool} (denied)`
+                                      : s.kind}
+                                  </span>
+                                  <span className="text-[10px] text-gray-600">#{i + 1}</span>
+                                </div>
+                                {s.kind === "tool" && (
+                                  <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap text-[10px] text-gray-400">
+                                    {JSON.stringify(s.result ?? s.arguments, null, 2)}
+                                  </pre>
+                                )}
+                                {s.error && (
+                                  <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-[10px] text-red-400">
+                                    {s.error}
+                                  </pre>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {task.final_answer && (
+                        <div className="rounded-md border border-green-800 bg-green-950/20 p-2">
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-green-400">Final answer</div>
+                          <p className="whitespace-pre-wrap text-xs text-green-100">{task.final_answer}</p>
+                        </div>
+                      )}
+
+                      {task.error && (
+                        <div className="rounded-md border border-red-800 bg-red-950/20 p-2 text-xs text-red-300">
+                          {task.error}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -740,7 +926,7 @@ export default function Editor() {
             />
             <button
               onClick={runAi}
-              disabled={!video || aiRunning || !aiCommand.trim()}
+              disabled={aiRunning || !aiCommand.trim()}
               className="btn-primary rounded-md px-3 py-1.5 text-xs"
             >
               {aiRunning ? "Running..." : "Run AI"}

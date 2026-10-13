@@ -1,21 +1,18 @@
 from fastapi import APIRouter, HTTPException
-from app.tools.registry import AGENT_TOOLS
-from app.tools.video_editor import (
-    upload_video,
-    get_video_info,
-    trim_video,
-    split_video,
-    change_aspect_ratio,
-    add_subtitles,
-    export_video,
-    clip_video,
-    _detect_duration,
-    _ensure_video,
-)
-from app.services.store import store
-from app.services.hermes import run_agent
+from app.tools.registry import AGENT_TOOLS, TOOL_DISPATCH
+from app.tools.video_editor import _ensure_video
+from app.services.agent_loop import manager
 
 router = APIRouter()
+
+
+def _video_ctx(video_id: str):
+    src = _ensure_video(video_id)
+    try:
+        from app.tools.video_editor import _detect_duration
+        return video_id, _detect_duration(src)
+    except Exception:
+        return video_id, None
 
 
 @router.get("/tools")
@@ -26,41 +23,59 @@ def list_tools():
 @router.post("/run")
 def run(payload: dict):
     command = (payload.get("command") or "").strip()
-    video_id = (payload.get("video_id") or "").strip()
-
     if not command:
         raise HTTPException(status_code=400, detail="command is required")
-    if not video_id:
-        raise HTTPException(status_code=400, detail="video_id is required")
 
-    src = _ensure_video(video_id)
-    duration = _detect_duration(src)
+    video_id = (payload.get("video_id") or "").strip() or None
+    duration = None
+    if video_id:
+        try:
+            video_id, duration = _video_ctx(video_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid video_id: {e}")
 
-    try:
-        parsed = run_agent(command, video_id, duration)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Hermes agent failed: {e}")
+    snap = manager.start(command, video_id, duration)
+    return {**snap, "task_id": snap["id"]}
 
-    name = parsed["tool"]
-    arguments = parsed["arguments"]
 
-    tool_map = {
-        "upload_video": lambda args: upload_video(
-            args.get("filename"), args.get("content_type"), args.get("size"), args.get("path")
-        ),
-        "get_video_info": lambda args: get_video_info(args["video_id"]),
-        "trim_video": lambda args: trim_video(args["video_id"], args["start_time"], args["end_time"]),
-        "split_video": lambda args: split_video(args["video_id"], args["timestamp"]),
-        "change_aspect_ratio": lambda args: change_aspect_ratio(args["video_id"], args["ratio"]),
-        "add_subtitles": lambda args: add_subtitles(args["video_id"], args["subtitles"]),
-        "export_video": lambda args: export_video(args["video_id"]),
-        "clip_video": lambda args: clip_video(
-            args["video_id"], args["start_time"], args["end_time"], args.get("ratio")
-        ),
-    }
+@router.get("/tasks/{task_id}")
+def get_task(task_id: str):
+    task = manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    return task.snapshot()
 
-    if name not in tool_map:
+
+@router.post("/tasks/{task_id}/stop")
+def stop_task(task_id: str):
+    task = manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    manager.stop(task_id)
+    return {"status": "stopping"}
+
+
+@router.post("/tasks/{task_id}/approval")
+def resolve_approval(task_id: str, payload: dict):
+    task = manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    approved = bool(payload.get("approved"))
+    if task.status != "pending_approval":
+        raise HTTPException(status_code=400, detail="task is not awaiting approval")
+    manager.approve(task_id, approved)
+    return {"status": "approved" if approved else "denied"}
+
+
+@router.post("/call")
+def call_tool(payload: dict):
+    name = payload.get("tool")
+    arguments = payload.get("arguments", {})
+    if name not in TOOL_DISPATCH:
         raise HTTPException(status_code=404, detail=f"Unknown tool: {name}")
-
-    return {"tool": name, "result": tool_map[name](arguments)}
-
+    try:
+        return {"tool": name, "result": TOOL_DISPATCH[name](arguments)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tool failed: {type(e).__name__}: {e}")

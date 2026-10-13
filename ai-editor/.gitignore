@@ -31,8 +31,8 @@ build/
 Thumbs.db
 
 # Media files (too large for git)
-media/uploads/
-media/outputs/
+**/media/uploads/
+**/media/outputs/
 
 # Logs
 *.log

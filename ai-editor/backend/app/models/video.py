@@ -84,3 +84,4 @@ class AgentTool(BaseModel):
     description: str
     parameters: dict
     output_schema: dict
+    requires_approval: bool = False

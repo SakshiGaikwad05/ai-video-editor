@@ -1,15 +1,18 @@
 from app.models.video import AgentTool
 
-AGENT_TOOLS: list[AgentTool] = [
+VIDEO_AGENT_TOOLS: list[AgentTool] = [
     AgentTool(
         name="upload_video",
-        description="Upload a video file for editing.",
+        description="Register a video file that already exists on disk into the media store. Returns a video_id usable by the other video tools.",
         parameters={
             "type": "object",
             "properties": {
-                "file": {"type": "string", "description": "multipart video file"},
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative path to a video file (.mp4/.mov etc.)",
+                },
             },
-            "required": ["file"],
+            "required": ["path"],
         },
         output_schema={
             "type": "object",
@@ -194,3 +197,49 @@ AGENT_TOOLS: list[AgentTool] = [
         },
     ),
 ]
+
+from pathlib import Path
+import mimetypes
+
+from app.tools.general import GENERAL_AGENT_TOOLS, GENERAL_DISPATCH
+from app.tools.video_editor import (
+    upload_video,
+    get_video_info,
+    trim_video,
+    split_video,
+    change_aspect_ratio,
+    add_subtitles,
+    export_video,
+    clip_video,
+)
+from app.tools.general import _resolve
+
+AGENT_TOOLS: list[AgentTool] = VIDEO_AGENT_TOOLS + GENERAL_AGENT_TOOLS
+
+
+def _upload_from_path(path: str) -> dict:
+    p = _resolve(path)
+    if not p.is_file():
+        raise ValueError(f"not a file or missing: {path}")
+    ctype = mimetypes.guess_type(p.name)[0] or "video/mp4"
+    return upload_video(p.name, ctype, p.stat().st_size, p)
+
+
+VIDEO_DISPATCH = {
+    "upload_video": lambda args: _upload_from_path(args["path"]),
+    "get_video_info": lambda args: get_video_info(args["video_id"]),
+    "trim_video": lambda args: trim_video(args["video_id"], args["start_time"], args["end_time"]),
+    "split_video": lambda args: split_video(args["video_id"], args["timestamp"]),
+    "change_aspect_ratio": lambda args: change_aspect_ratio(args["video_id"], args["ratio"]),
+    "add_subtitles": lambda args: add_subtitles(args["video_id"], args["subtitles"]),
+    "export_video": lambda args: export_video(args["video_id"]),
+    "clip_video": lambda args: clip_video(
+        args["video_id"], args["start_time"], args["end_time"], args.get("ratio")
+    ),
+}
+
+TOOL_DISPATCH = {**VIDEO_DISPATCH, **GENERAL_DISPATCH}
+
+APPROVAL_REQUIRED_TOOLS = {
+    t.name: t.requires_approval for t in AGENT_TOOLS
+}

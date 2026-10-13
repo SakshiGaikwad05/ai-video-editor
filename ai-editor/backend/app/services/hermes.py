@@ -2,11 +2,19 @@
 Hermes Agent CLI gateway.
 
 Executes Hermes as the AI orchestrator for video commands.
+This integration uses the single-query Hermes CLI contract:
+    hermes chat -q "<prompt>" --cli -Q
+and expects ONLY the final JSON object back:
+    {"tool":"...","arguments":{...}}
+
+FastAPI then executes the returned tool and returns the result
+to the frontend. No Ollama path is used.
 """
 
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -142,11 +150,33 @@ def _parse_tool_call(text: str) -> dict[str, Any]:
     return {"tool": tool, "arguments": args}
 
 
+def complete(prompt: str, timeout: int = 300) -> str:
+    last_err = ""
+    for attempt in range(3):
+        proc = subprocess.run(
+            [str(HERMES_CLI), "-z", prompt, "--ignore-rules"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            last_err = f"Hermes CLI failed with code {proc.returncode}: {proc.stderr[-500:]}"
+            time.sleep(2 * (attempt + 1))
+            continue
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            last_err = f"Hermes CLI returned empty output. stderr: {proc.stderr[-500:]}"
+            time.sleep(2 * (attempt + 1))
+            continue
+        return raw
+    raise RuntimeError(last_err)
+
+
 def run_agent(command: str, video_id: str, duration: float) -> dict[str, Any]:
     prompt = _build_prompt(command, video_id, duration)
 
     proc = subprocess.run(
-        [str(HERMES_CLI), "-z", prompt, "--cli"],
+        [str(HERMES_CLI), "chat", "-q", prompt, "--cli", "-Q"],
         capture_output=True,
         text=True,
         timeout=180,
@@ -157,11 +187,14 @@ def run_agent(command: str, video_id: str, duration: float) -> dict[str, Any]:
             f"Hermes CLI failed with code {proc.returncode}: {proc.stderr[-500:]}"
         )
 
-    raw = proc.stdout.strip()
+    raw = (proc.stdout or "").strip()
     if not raw:
         raise RuntimeError(f"Hermes CLI returned empty output. stderr: {proc.stderr[-500:]}")
 
     parsed = _parse_tool_call(raw)
+
+    if parsed["tool"] not in {t["name"] for t in TOOL_DEFINITIONS}:
+        raise ValueError(f"Hermes returned unknown tool: {parsed['tool']}")
 
     if "video_id" not in parsed["arguments"]:
         parsed["arguments"]["video_id"] = video_id
